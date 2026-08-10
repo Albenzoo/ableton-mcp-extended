@@ -939,14 +939,17 @@ class AbletonMCP(ControlSurface):
     def _save_project(self, path):
         """Save the current project (Save As) to the given path."""
         try:
+            app = self.application()
+            if hasattr(app, "save_live_set"):
+                app.save_live_set(path)
+                return {"saved_to": path, "mode": "application.save_live_set"}
             if hasattr(self._song, "save_as"):
                 self._song.save_as(path)
                 return {"saved_to": path, "mode": "song.save_as"}
-            app = self.application()
             if hasattr(app, "save_live_set_as"):
                 app.save_live_set_as(path)
                 return {"saved_to": path, "mode": "application.save_live_set_as"}
-            raise AttributeError("No Save As method available (song.save_as / application.save_live_set_as)")
+            raise AttributeError("No Save As method available (application.save_live_set / song.save_as / application.save_live_set_as)")
         except Exception as e:
             self.log_message("Error saving project: " + str(e))
             raise

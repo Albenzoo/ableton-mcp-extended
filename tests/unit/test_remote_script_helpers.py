@@ -185,28 +185,30 @@ class TestCreateCuePointAssignsName:
         assert cue.name == "1.1.1"
 
 
-def test_save_project_calls_song_save_as():
+def test_save_project_calls_app_save_live_set():
     cs = _StubControlSurface(None)
     cs._song = MagicMock()
-    cs.log_message = lambda msg: None
-    result = cs._save_project("C:/Music/Lofi Animal/Panda/001_Panda_Study.als")
-    assert result["saved_to"] == "C:/Music/Lofi Animal/Panda/001_Panda_Study.als"
-    assert result["mode"] == "song.save_as"
-    cs._song.save_as.assert_called_once_with(
-        "C:/Music/Lofi Animal/Panda/001_Panda_Study.als")
-
-
-def test_save_project_falls_back_to_app_save_live_set_as():
-    cs = _StubControlSurface(None)
-    cs._song = MagicMock()
-    del cs._song.save_as
     cs.log_message = lambda msg: None
     mock_app = MagicMock()
     cs.application = MagicMock(return_value=mock_app)
     result = cs._save_project("C:/Music/Lofi Animal/Panda/001_Panda_Study.als")
     assert result["saved_to"] == "C:/Music/Lofi Animal/Panda/001_Panda_Study.als"
-    assert result["mode"] == "application.save_live_set_as"
-    mock_app.save_live_set_as.assert_called_once_with(
+    assert result["mode"] == "application.save_live_set"
+    mock_app.save_live_set.assert_called_once_with(
+        "C:/Music/Lofi Animal/Panda/001_Panda_Study.als")
+
+
+def test_save_project_falls_back_to_song_save_as():
+    cs = _StubControlSurface(None)
+    cs._song = MagicMock()
+    cs.log_message = lambda msg: None
+    mock_app = MagicMock()
+    del mock_app.save_live_set
+    cs.application = MagicMock(return_value=mock_app)
+    result = cs._save_project("C:/Music/Lofi Animal/Panda/001_Panda_Study.als")
+    assert result["saved_to"] == "C:/Music/Lofi Animal/Panda/001_Panda_Study.als"
+    assert result["mode"] == "song.save_as"
+    cs._song.save_as.assert_called_once_with(
         "C:/Music/Lofi Animal/Panda/001_Panda_Study.als")
 
 
