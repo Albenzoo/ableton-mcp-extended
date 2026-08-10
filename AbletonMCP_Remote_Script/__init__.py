@@ -228,6 +228,9 @@ class AbletonMCP(ControlSurface):
             elif command_type == "save_project":
                 path = params.get("path", "")
                 response["result"] = self._save_project(path)
+            elif command_type == "record_master_to_wav":
+                path = params.get("path", "")
+                response["result"] = self._record_master_to_wav(path)
 
             # Commands that modify Live's state should be scheduled on the main thread
             elif command_type in ["create_midi_track", "set_track_name",
@@ -245,8 +248,7 @@ class AbletonMCP(ControlSurface):
                                  "set_device_parameter", "set_device_enabled",
                                  "delete_device", "navigate_preset",
                                  "delete_track",
-                                 "set_track_volume", "set_track_panning",
-                                 "record_master_to_wav"]:
+                                 "set_track_volume", "set_track_panning"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -291,9 +293,6 @@ class AbletonMCP(ControlSurface):
                             result = self._start_playback()
                         elif command_type == "stop_playback":
                             result = self._stop_playback()
-                        elif command_type == "record_master_to_wav":
-                            path = params.get("path", "")
-                            result = self._record_master_to_wav(path)
                         elif command_type == "load_instrument_or_effect":
                             track_index = params.get("track_index", 0)
                             uri = params.get("uri", "")
@@ -987,17 +986,29 @@ class AbletonMCP(ControlSurface):
             raise
 
     def _record_master_to_wav(self, path):
-        """Record the master bus in real time and write it to a WAV file."""
-        try:
-            was_playing = self._song.is_playing
-            if was_playing:
-                self._song.stop_playing()
+        """Record the master bus in real time and write it to a WAV file.
 
-            track = self._song.create_audio_track()
+        Runs on the server thread (NOT the Ableton main thread) so Live's
+        main thread stays responsive during the real-time recording. The
+        Live API calls are dispatched to the main thread via schedule_message;
+        a dedicated polling thread waits for the recording to finish.
+        """
+        result_holder = {}
+        done = threading.Event()
+        error_holder = {}
+
+        def on_main_thread():
+            """Set up and start the recording (runs on Ableton main thread)."""
             try:
+                was_playing = self._song.is_playing
+                if was_playing:
+                    self._song.stop_playing()
+
+                track = self._song.create_audio_track()
+                result_holder["track"] = track
+                result_holder["was_playing"] = was_playing
+
                 track.name = "MCP Render Temp"
-                # Set input to Master/Resampling via available routing types
-                # (robust across Live versions; avoids module-level Live access).
                 resample = None
                 for rt in track.available_input_routing_types:
                     if rt.display_name and "Resampl" in rt.display_name:
@@ -1012,41 +1023,86 @@ class AbletonMCP(ControlSurface):
                 track.record_start = 0.0
                 self._song.arrangement_overdub = False
 
-                self._song.start_playing()
-
-                # Get length in beats from the longest arrangement clip, default 64 beats (16 bars)
+                # Compute recording length from the longest arrangement clip,
+                # defaulting to 64 beats (16 bars).
                 length_beats = 64.0
                 for t in self._song.tracks:
                     for clip in t.arrangement_clips:
                         end = clip.end
                         if end is not None:
                             length_beats = max(length_beats, float(end))
+                result_holder["length_beats"] = length_beats
 
-                # Poll until end of longest clip
+                self._song.start_playing()
+                done.set()
+            except Exception as e:
+                error_holder["error"] = str(e)
+                done.set()
+
+        def poll_and_finish():
+            """Wait for playback to pass the target time, then write the WAV."""
+            try:
+                length_beats = result_holder.get("length_beats", 64.0)
+                track = result_holder.get("track")
+                deadline = time.time() + length_beats * 60.0 / max(self._song.tempo, 1.0) + 15.0
                 while self._song.current_song_time < length_beats:
+                    if time.time() > deadline:
+                        raise RuntimeError("Recording timed out (playback did not advance)")
                     time.sleep(0.2)
-
                 self._song.stop_playing()
 
-                duration_sec = length_beats * 60.0 / self._song.tempo
+                duration_sec = length_beats * 60.0 / max(self._song.tempo, 1.0)
 
-                # Write audio of recorded clip to disk (offline, instant)
                 rec_clips = [c for c in track.arrangement_clips if c is not None]
                 if rec_clips:
                     rec_clips[0].create_audio_clip(path)
+                    result_holder["wav_path"] = path
+                else:
+                    result_holder["wav_path"] = None
+                result_holder["duration_sec"] = duration_sec
+            except Exception as e:
+                error_holder["error"] = str(e)
             finally:
-                track.arm = False
+                try:
+                    if self._song.is_playing:
+                        self._song.stop_playing()
+                except Exception:
+                    pass
                 try:
                     self._song.delete_track(len(self._song.tracks) - 1)
                 except Exception:
                     pass
-                if was_playing:
-                    self._song.start_playing()
+                try:
+                    if result_holder.get("was_playing"):
+                        self._song.start_playing()
+                except Exception:
+                    pass
+                done.set()
 
-            return {"duration_sec": duration_sec, "wav_path": path}
-        except Exception as e:
-            self.log_message("Error recording master to wav: " + str(e))
-            raise
+        # Run setup on the main thread.
+        self.schedule_message(0, on_main_thread)
+
+        # Wait for setup to complete or fail.
+        if not done.wait(timeout=10.0):
+            raise RuntimeError("Failed to start recording (main thread not responding)")
+        if "error" in error_holder:
+            raise RuntimeError(error_holder["error"])
+
+        # Clear the done flag so poll_and_finish can set it again.
+        done.clear()
+
+        # Run the polling/finalization on a separate thread.
+        threading.Thread(target=poll_and_finish, daemon=True).start()
+
+        if not done.wait(timeout=120.0):
+            raise RuntimeError("Recording timed out")
+        if "error" in error_holder:
+            raise RuntimeError(error_holder["error"])
+
+        return {
+            "duration_sec": result_holder.get("duration_sec", 0.0),
+            "wav_path": result_holder.get("wav_path"),
+        }
 
     # Browser helper methods
 

@@ -207,7 +207,9 @@ def test_record_master_to_wav_creates_audio_track():
     cs = _StubControlSurface(None)
     cs._song = MagicMock()
     cs.log_message = lambda msg: None
-    # First read (start of polling) returns 0.0, second read returns 200.0 (> 64) -> loop exits
+    # schedule_message runs the callable synchronously (simulates main thread).
+    cs.schedule_message = lambda delay, fn: fn()
+    # First read (start of setup/playback) then poll read returns 200.0 (> 64).
     type(cs._song).current_song_time = PropertyMock(side_effect=[0.0, 200.0])
     cs._song.tempo = 78.0
     cs._song.tracks = []
@@ -222,3 +224,4 @@ def test_record_master_to_wav_creates_audio_track():
     assert cs._song.create_audio_track.called
     rec_track.arrangement_clips[0].create_audio_clip.assert_called_once_with(
         "C:/Music/out.wav")
+    assert result["duration_sec"] > 0
