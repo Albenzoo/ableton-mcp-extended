@@ -36,6 +36,15 @@ ABLETON_CLASS = "Ableton Live Window Class"
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
 
+# 64-bit pointer handling: without these, ctypes truncates HGLOBAL/LPVOID
+# return values to 32 bits, so GlobalLock returns 0.
+kernel32.GlobalAlloc.restype = wt.HGLOBAL
+kernel32.GlobalLock.restype = wt.LPVOID
+kernel32.GlobalAlloc.argtypes = [wt.UINT, ctypes.c_size_t]
+kernel32.GlobalLock.argtypes = [wt.HGLOBAL]
+kernel32.GlobalUnlock.argtypes = [wt.HGLOBAL]
+user32.SetClipboardData.argtypes = [wt.UINT, wt.HGLOBAL]
+
 WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, wt.HWND, wt.LPARAM)
 
 
@@ -152,13 +161,104 @@ def _set_clipboard_text(text):
         user32.CloseClipboard()
 
 
+WM_SETTEXT = 0x000C
+WM_GETTEXT = 0x000D
+WM_COMMAND = 0x0111
+BN_CLICKED = 0
+BM_CLICK = 0x00F5
+
+
+def _find_dialog():
+    """Find the top-level 'Save Live Set as:' dialog window (#32770)."""
+    found = []
+
+    def cb(hwnd, lp):
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        cls = ctypes.create_unicode_buffer(128)
+        user32.GetClassNameW(hwnd, cls, 128)
+        if cls.value != "#32770":
+            return True
+        title = ctypes.create_unicode_buffer(256)
+        user32.GetWindowTextW(hwnd, title, 256)
+        title_text = title.value or ""
+        if "Salva" in title_text or "Save" in title_text or "Live Set" in title_text:
+            found.append(hwnd)
+        return True
+
+    user32.EnumWindows(WNDENUMPROC(cb), 0)
+    return found[0] if found else None
+
+
+VK_L = 0x4C
+
+
+def _find_filename_combo(parent):
+    """Find the file-name ComboBox (first ComboBox child of the dialog)."""
+    found = []
+
+    def cb(hwnd, lp):
+        cls = ctypes.create_unicode_buffer(128)
+        user32.GetClassNameW(hwnd, cls, 128)
+        if cls.value == "ComboBox":
+            found.append(hwnd)
+        return True
+
+    user32.EnumChildWindows(parent, WNDENUMPROC(cb), 0)
+    return found[0] if found else None
+
+
+def _find_button(parent, labels=("salva", "save")):
+    """Find a Button child whose label (after removing &) is in labels."""
+    WNDENUMPROC2 = ctypes.WINFUNCTYPE(ctypes.c_bool, wt.HWND, wt.LPARAM)
+    result = [None]
+
+    def cb(hwnd, lp):
+        cls = ctypes.create_unicode_buffer(128)
+        user32.GetClassNameW(hwnd, cls, 128)
+        if cls.value == "Button":
+            txt = ctypes.create_unicode_buffer(64)
+            user32.GetWindowTextW(hwnd, txt, 64)
+            label = (txt.value or "").replace("&", "").lower()
+            if label in labels:
+                result[0] = hwnd
+                return False
+        return True
+
+    user32.EnumChildWindows(parent, WNDENUMPROC2(cb), 0)
+    return result[0]
+
+
+def _wait_for_dialog(timeout=5.0):
+    """Wait up to timeout for a Save As dialog to appear; return it or None."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        dlg = _find_dialog()
+        if dlg:
+            return dlg
+        time.sleep(0.1)
+    return None
+
+
 def save_as(path):
-    """Perform Save As in Ableton by simulating the keyboard shortcut."""
+    """Perform Save As in Ableton by driving the Save As dialog.
+
+    Verified working sequence for Ableton 12 on Windows:
+      1. Open the Save As dialog (Ctrl+Shift+S).
+      2. Ctrl+L focuses the dialog's address bar; paste the destination
+         FOLDER path there and press Enter to navigate the dialog to it.
+      3. Set ONLY the file name in the file-name ComboBox.
+      4. Click the Save button.
+
+    Note: Ableton always creates a "<name> Project" subfolder next to the
+    requested path (standard Ableton behavior).
+    """
     hwnd = find_ableton_main_hwnd()
     if not hwnd:
         return {"error": "Ableton main window not found"}
 
     dirpath = os.path.dirname(path)
+    filename = os.path.basename(path)
     if dirpath:
         os.makedirs(dirpath, exist_ok=True)
 
@@ -171,27 +271,54 @@ def save_as(path):
         pass
     time.sleep(0.3)
 
-    # Ctrl+Shift+S -> open Save As dialog.
-    _send_keys((VK_CONTROL, False), (VK_SHIFT, False), (VK_S, False),
-               (VK_S, True), (VK_SHIFT, True), (VK_CONTROL, True))
-    time.sleep(0.8)
+    # Reuse an already-open Save As dialog, else open one.
+    dlg = _find_dialog()
+    if not dlg:
+        _send_keys((VK_CONTROL, False), (VK_SHIFT, False), (VK_S, False),
+                   (VK_S, True), (VK_SHIFT, True), (VK_CONTROL, True))
+        dlg = _wait_for_dialog()
+    if not dlg:
+        return {"error": "Save As dialog did not appear"}
 
-    # Put the destination path on the clipboard.
-    _set_clipboard_text(path)
+    # Make the dialog foreground so keystrokes reach it.
+    user32.ShowWindow(dlg, 9)
+    user32.SetForegroundWindow(dlg)
+    time.sleep(0.4)
 
-    # Select-all then paste the full path into the file-name field.
-    _send_keys((VK_CONTROL, False), (VK_A, False),
-               (VK_A, True), (VK_CONTROL, True))
-    time.sleep(0.2)
-    _send_keys((VK_CONTROL, False), (VK_V, False),
-               (VK_V, True), (VK_CONTROL, True))
-    time.sleep(0.3)
-
-    # Confirm.
-    _send_keys((VK_RETURN, False), (VK_RETURN, True))
+    # Ctrl+L -> focus the address bar.
+    _send_keys((VK_CONTROL, False), (VK_L, False), (VK_L, True), (VK_CONTROL, True))
     time.sleep(0.5)
 
-    return {"status": "ok", "path": path, "hwnd": hwnd}
+    # Paste the destination folder path and press Enter to navigate.
+    _set_clipboard_text(dirpath)
+    _send_keys((VK_CONTROL, False), (VK_V, False), (VK_V, True), (VK_CONTROL, True))
+    time.sleep(0.3)
+    _send_keys((VK_RETURN, False), (VK_RETURN, True))
+    time.sleep(1.5)
+
+    # Set only the file name in the file-name ComboBox.
+    combo = _find_filename_combo(dlg)
+    if not combo:
+        return {"error": "file-name field not found"}
+    user32.SendMessageW(combo, WM_SETTEXT, 0, ctypes.c_wchar_p(filename))
+    time.sleep(0.3)
+
+    # Click the Save button. Give Ableton a moment to finish navigating and
+    # enable the button; retry a few times.
+    save_btn = None
+    for _ in range(10):
+        save_btn = _find_button(dlg, ("salva", "save"))
+        if save_btn:
+            break
+        time.sleep(0.3)
+    if save_btn:
+        user32.SendMessageW(save_btn, BM_CLICK, 0, 0)
+    else:
+        # Fallback: press Enter.
+        _send_keys((VK_RETURN, False), (VK_RETURN, True))
+    time.sleep(0.5)
+
+    return {"status": "ok", "path": path, "hwnd": hwnd, "dialog": dlg}
 
 
 class Handler(BaseHTTPRequestHandler):
