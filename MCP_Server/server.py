@@ -120,6 +120,7 @@ class AbletonConnection:
             "set_device_parameter", "set_device_enabled",
             "delete_device", "navigate_preset",
             "set_track_volume", "set_track_panning",
+            "save_project",
         ]
         
         try:
@@ -540,6 +541,25 @@ def set_track_panning(ctx: Context, track_index: int, panning: float) -> str:
     except Exception as e:
         logger.error(f"Error setting track panning: {str(e)}")
         return f"Error setting track panning: {str(e)}"
+
+
+@mcp.tool()
+def save_ableton_project(ctx: Context, path: str) -> str:
+    """
+    Save the current Ableton project (Save As) to the given path.
+
+    Parameters:
+    - path: Full destination path for the .als file.
+    """
+    if not path or not path.strip():
+        return "Error saving project: path cannot be empty"
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("save_project", {"path": path})
+        return f"Project saved to: {result.get('saved_to', path)}"
+    except Exception as e:
+        logger.error(f"Error saving Ableton project: {str(e)}")
+        return f"Error saving project: {str(e)}"
 
 
 @mcp.tool()
