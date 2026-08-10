@@ -38,6 +38,9 @@ Thumbs.db
 # Git worktrees
 .worktrees/
 
+# SDD scratch workspace
+.superpowers/
+
 # Ableton-specific
 *.als
 *.alc
