@@ -229,7 +229,7 @@ def _find_button(parent, labels=("salva", "save")):
     return result[0]
 
 
-def _wait_for_dialog(timeout=5.0):
+def _wait_for_dialog(timeout=8.0):
     """Wait up to timeout for a Save As dialog to appear; return it or None."""
     deadline = time.time() + timeout
     while time.time() < deadline:

@@ -203,25 +203,38 @@ def test_save_project_posts_to_save_helper():
     assert '"path": "C:/out.als"' in sent
 
 
-def test_record_master_to_wav_creates_audio_track():
+def test_start_master_recording_sets_up_track():
     cs = _StubControlSurface(None)
     cs._song = MagicMock()
     cs.log_message = lambda msg: None
-    # schedule_message runs the callable synchronously (simulates main thread).
-    cs.schedule_message = lambda delay, fn: fn()
-    # First read (start of setup/playback) then poll read returns 200.0 (> 64).
-    type(cs._song).current_song_time = PropertyMock(side_effect=[0.0, 200.0])
-    cs._song.tempo = 78.0
-    cs._song.tracks = []
     rec_track = MagicMock()
     rec_track.available_input_routing_types = [
         MagicMock(display_name="Resampling")
     ]
-    rec_track.arrangement_clips = [MagicMock()]
     cs._song.create_audio_track.return_value = rec_track
-    result = cs._record_master_to_wav("C:/Music/out.wav")
-    assert result["wav_path"] == "C:/Music/out.wav"
+    result = cs._start_master_recording("C:/Music/out.wav")
+    assert result["status"] == "recording"
     assert cs._song.create_audio_track.called
-    rec_track.arrangement_clips[0].create_audio_clip.assert_called_once_with(
-        "C:/Music/out.wav")
-    assert result["duration_sec"] > 0
+    assert rec_track.arm is True
+    assert rec_track.name == "MCP Render Temp"
+    cs._song.start_playing.assert_called_once()
+
+
+def test_stop_master_recording_writes_wav():
+    cs = _StubControlSurface(None)
+    cs._song = MagicMock()
+    cs.log_message = lambda msg: None
+    rec_clip = MagicMock()
+    rec_track = MagicMock()
+    rec_track.arrangement_clips = [rec_clip]
+    cs._song.tracks = [rec_track]
+    cs._recording = {
+        "track": rec_track,
+        "path": "C:/Music/out.wav",
+        "was_playing": False,
+        "started": 1000.0,
+    }
+    result = cs._stop_master_recording()
+    assert result["wav_path"] == "C:/Music/out.wav"
+    rec_clip.create_audio_clip.assert_called_once_with("C:/Music/out.wav")
+    cs._song.stop_playing.assert_called()

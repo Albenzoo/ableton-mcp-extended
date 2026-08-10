@@ -122,7 +122,8 @@ class AbletonConnection:
             "set_device_parameter", "set_device_enabled",
             "delete_device", "navigate_preset",
             "set_track_volume", "set_track_panning",
-            "save_project", "record_master_to_wav",
+            "save_project",
+            "start_master_recording", "stop_master_recording",
         ]
         
         try:
@@ -138,10 +139,7 @@ class AbletonConnection:
                 time.sleep(0.1)  # 100ms delay
             
             # Set timeout based on command type
-            if command_type == "record_master_to_wav":
-                timeout = 130.0  # real-time recording can take minutes
-            else:
-                timeout = 15.0 if is_modifying_command else 10.0
+            timeout = 15.0 if is_modifying_command else 10.0
             self.sock.settimeout(timeout)
             
             # Receive the response
@@ -612,22 +610,44 @@ def save_ableton_project(ctx: Context, path: str) -> str:
 
 
 @mcp.tool()
-def record_master_to_wav(ctx: Context, path: str) -> str:
+def start_master_recording(ctx: Context, path: str) -> str:
     """
-    Record the Ableton master bus in real time and write it to a WAV file.
+    Start recording the Ableton master bus in real time onto a temp track.
+
+    Returns immediately; wait the desired duration (the song plays in real
+    time), then call stop_master_recording to write the WAV file.
 
     Parameters:
     - path: Full destination path for the .wav file.
     """
     if not path or not path.strip():
-        return "Error recording master: path cannot be empty"
+        return "Error starting recording: path cannot be empty"
     try:
         ableton = get_ableton_connection()
-        result = ableton.send_command("record_master_to_wav", {"path": path})
-        return f"Recorded master: {result.get('duration_sec', '?')}s -> {result.get('wav_path', path)}"
+        result = ableton.send_command("start_master_recording", {"path": path})
+        return f"Recording started: {result.get('status', 'recording')} -> {result.get('path', path)}"
     except Exception as e:
-        logger.error(f"Error recording master: {str(e)}")
-        return f"Error recording master: {str(e)}"
+        logger.error(f"Error starting recording: {str(e)}")
+        return f"Error starting recording: {str(e)}"
+
+
+@mcp.tool()
+def stop_master_recording(ctx: Context) -> str:
+    """
+    Stop the master recording and write the recorded audio to a WAV file.
+
+    Call this after start_master_recording once the song has played for the
+    desired duration.
+
+    No parameters.
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("stop_master_recording")
+        return f"Recording stopped: {result.get('duration_sec', '?')}s -> {result.get('wav_path', 'unknown')}"
+    except Exception as e:
+        logger.error(f"Error stopping recording: {str(e)}")
+        return f"Error stopping recording: {str(e)}"
 
 
 @mcp.tool()
