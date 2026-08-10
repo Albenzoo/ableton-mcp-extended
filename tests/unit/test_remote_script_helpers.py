@@ -3,7 +3,7 @@
 import os
 import sys
 import types
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, PropertyMock
 
 
 class _FrameworkControlSurface:
@@ -23,6 +23,24 @@ sys.modules.setdefault("_Framework.ControlSurface", _cs_module)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from AbletonMCP_Remote_Script import AbletonMCP  # noqa: E402
+
+import AbletonMCP_Remote_Script as _remote_script  # noqa: E402
+
+
+class _FakeInputRoutingType:
+    @staticmethod
+    def input_routing_type(name):
+        return name
+
+
+class _FakeLive:
+    InputRoutingType = _FakeInputRoutingType
+
+
+# In Ableton's scripting runtime `Live` is a provided builtin module; fake it
+# here so the handler's `Live.InputRoutingType.input_routing_type(...)` call works
+# outside that runtime.
+_remote_script.Live = _FakeLive()
 
 
 class _StubControlSurface(AbletonMCP):
@@ -168,11 +186,22 @@ class TestCreateCuePointAssignsName:
 
 
 def test_save_project_calls_song_save():
-    from unittest.mock import MagicMock
-
     cs = _StubControlSurface(None)
     cs._song = MagicMock()
     cs.log_message = lambda msg: None
     result = cs._save_project("C:/Music/Lofi Animal/Panda/001_Panda_Study.als")
     assert result["saved_to"] == "C:/Music/Lofi Animal/Panda/001_Panda_Study.als"
     cs._song.save.assert_called_once()
+
+
+def test_record_master_to_wav_creates_audio_track():
+    cs = _StubControlSurface(None)
+    cs._song = MagicMock()
+    cs.log_message = lambda msg: None
+    # First read (start of polling) returns 0.0, second read returns 200.0 (> 64) -> loop exits
+    type(cs._song).current_song_time = PropertyMock(side_effect=[0.0, 200.0])
+    cs._song.tempo = 78.0
+    cs._song.tracks = []
+    result = cs._record_master_to_wav("C:/Music/out.wav")
+    assert result["wav_path"] == "C:/Music/out.wav"
+    assert cs._song.create_audio_track.called

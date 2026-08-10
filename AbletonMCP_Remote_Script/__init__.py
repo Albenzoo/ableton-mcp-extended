@@ -242,7 +242,7 @@ class AbletonMCP(ControlSurface):
                                  "delete_device", "navigate_preset",
                                  "delete_track",
                                  "set_track_volume", "set_track_panning",
-                                 "save_project"]:
+                                 "save_project", "record_master_to_wav"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -290,6 +290,9 @@ class AbletonMCP(ControlSurface):
                         elif command_type == "save_project":
                             path = params.get("path", "")
                             result = self._save_project(path)
+                        elif command_type == "record_master_to_wav":
+                            path = params.get("path", "")
+                            result = self._record_master_to_wav(path)
                         elif command_type == "load_instrument_or_effect":
                             track_index = params.get("track_index", 0)
                             uri = params.get("uri", "")
@@ -940,6 +943,56 @@ class AbletonMCP(ControlSurface):
             return {"saved_to": path}
         except Exception as e:
             self.log_message("Error saving project: " + str(e))
+            raise
+
+    def _record_master_to_wav(self, path):
+        """Record the master bus in real time and write it to a WAV file."""
+        try:
+            was_playing = self._song.is_playing
+            if was_playing:
+                self._song.stop_playing()
+
+            track = self._song.create_audio_track()
+            try:
+                track.name = "MCP Render Temp"
+                track.input_routing_type = Live.InputRoutingType.input_routing_type("Resampling")
+                track.arm = True
+
+                self._song.current_song_time = 0.0
+                track.record_start = 0.0
+                self._song.arrangement_overdub = False
+
+                self._song.start_playing()
+
+                # Get length in beats from the longest arrangement clip, default 64 beats (16 bars)
+                length_beats = 64.0
+                for t in self._song.tracks:
+                    for clip in t.arrangement_clips:
+                        end = clip.end
+                        if end is not None:
+                            length_beats = max(length_beats, float(end))
+
+                # Poll until end of longest clip
+                while self._song.current_song_time < length_beats:
+                    time.sleep(0.2)
+
+                self._song.stop_playing()
+
+                duration_sec = length_beats * 60.0 / self._song.tempo
+
+                # Write audio of recorded clip to disk (offline, instant)
+                rec_clips = [c for c in track.arrangement_clips if c is not None]
+                if rec_clips:
+                    rec_clips[0].create_audio_clip(path)
+            finally:
+                track.arm = False
+                self._song.delete_track(track)
+                if was_playing:
+                    self._song.start_playing()
+
+            return {"duration_sec": duration_sec, "wav_path": path}
+        except Exception as e:
+            self.log_message("Error recording master to wav: " + str(e))
             raise
 
     # Browser helper methods
