@@ -211,6 +211,14 @@ def test_record_master_to_wav_creates_audio_track():
     type(cs._song).current_song_time = PropertyMock(side_effect=[0.0, 200.0])
     cs._song.tempo = 78.0
     cs._song.tracks = []
+    rec_track = MagicMock()
+    rec_track.available_input_routing_types = [
+        MagicMock(display_name="Resampling")
+    ]
+    rec_track.arrangement_clips = [MagicMock()]
+    cs._song.create_audio_track.return_value = rec_track
     result = cs._record_master_to_wav("C:/Music/out.wav")
     assert result["wav_path"] == "C:/Music/out.wav"
     assert cs._song.create_audio_track.called
+    rec_track.arrangement_clips[0].create_audio_clip.assert_called_once_with(
+        "C:/Music/out.wav")

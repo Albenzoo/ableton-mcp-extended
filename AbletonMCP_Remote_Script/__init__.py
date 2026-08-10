@@ -993,7 +993,16 @@ class AbletonMCP(ControlSurface):
             track = self._song.create_audio_track()
             try:
                 track.name = "MCP Render Temp"
-                track.input_routing_type = Live.InputRoutingType.input_routing_type("Resampling")
+                # Set input to Master/Resampling via available routing types
+                # (robust across Live versions; avoids module-level Live access).
+                resample = None
+                for rt in track.available_input_routing_types:
+                    if rt.display_name and "Resampl" in rt.display_name:
+                        resample = rt
+                        break
+                if resample is None:
+                    raise RuntimeError("Resampling input routing not available")
+                track.input_routing_type = resample
                 track.arm = True
 
                 self._song.current_song_time = 0.0
@@ -1024,7 +1033,10 @@ class AbletonMCP(ControlSurface):
                     rec_clips[0].create_audio_clip(path)
             finally:
                 track.arm = False
-                self._song.delete_track(track)
+                try:
+                    self._song.delete_track(len(self._song.tracks) - 1)
+                except Exception:
+                    pass
                 if was_playing:
                     self._song.start_playing()
 
