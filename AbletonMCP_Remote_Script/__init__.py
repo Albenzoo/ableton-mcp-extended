@@ -225,6 +225,9 @@ class AbletonMCP(ControlSurface):
             elif command_type == "get_track_info":
                 track_index = params.get("track_index", 0)
                 response["result"] = self._get_track_info(track_index)
+            elif command_type == "save_project":
+                path = params.get("path", "")
+                response["result"] = self._save_project(path)
 
             # Commands that modify Live's state should be scheduled on the main thread
             elif command_type in ["create_midi_track", "set_track_name",
@@ -243,7 +246,7 @@ class AbletonMCP(ControlSurface):
                                  "delete_device", "navigate_preset",
                                  "delete_track",
                                  "set_track_volume", "set_track_panning",
-                                 "save_project", "record_master_to_wav"]:
+                                 "record_master_to_wav"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -288,9 +291,6 @@ class AbletonMCP(ControlSurface):
                             result = self._start_playback()
                         elif command_type == "stop_playback":
                             result = self._stop_playback()
-                        elif command_type == "save_project":
-                            path = params.get("path", "")
-                            result = self._save_project(path)
                         elif command_type == "record_master_to_wav":
                             path = params.get("path", "")
                             result = self._record_master_to_wav(path)
