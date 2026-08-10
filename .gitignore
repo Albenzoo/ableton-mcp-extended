@@ -35,6 +35,9 @@ Thumbs.db
 *.tmp
 *.log
 
+# Git worktrees
+.worktrees/
+
 # Ableton-specific
 *.als
 *.alc
