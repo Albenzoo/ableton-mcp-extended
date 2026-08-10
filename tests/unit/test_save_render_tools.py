@@ -21,11 +21,21 @@ def test_save_ableton_project_sends_path(mock_conn):
     mock_ableton.send_command.return_value = {"saved_to": "C:/Music/Lofi Animal/Panda/001_Panda_Study.als"}
     mock_conn.return_value = mock_ableton
 
-    result = save_ableton_project(MagicMock(), path="C:/Music/Lofi Animal/Panda/001_Panda_Study.als")
+    with patch('MCP_Server.server._ensure_save_helper', return_value=""):
+        result = save_ableton_project(MagicMock(), path="C:/Music/Lofi Animal/Panda/001_Panda_Study.als")
 
     assert "001_Panda_Study.als" in result
     mock_ableton.send_command.assert_called_once_with(
         "save_project", {"path": "C:/Music/Lofi Animal/Panda/001_Panda_Study.als"})
+
+
+@patch('MCP_Server.server.get_ableton_connection')
+def test_save_ableton_project_returns_helper_error(mock_conn):
+    with patch('MCP_Server.server._ensure_save_helper', return_value="helper not running"):
+        result = save_ableton_project(MagicMock(), path="C:/Music/Lofi Animal/Panda/001_Panda_Study.als")
+
+    assert "helper not running" in result
+    mock_conn.return_value.send_command.assert_not_called()
 
 
 @patch('MCP_Server.server.get_ableton_connection')

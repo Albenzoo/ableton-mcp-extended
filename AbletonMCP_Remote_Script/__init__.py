@@ -225,6 +225,7 @@ class AbletonMCP(ControlSurface):
             elif command_type == "get_track_info":
                 track_index = params.get("track_index", 0)
                 response["result"] = self._get_track_info(track_index)
+
             # Commands that modify Live's state should be scheduled on the main thread
             elif command_type in ["create_midi_track", "set_track_name",
                                  "create_clip", "add_notes_to_clip", "set_clip_name",
@@ -937,19 +938,47 @@ class AbletonMCP(ControlSurface):
             raise
 
     def _save_project(self, path):
-        """Save the current project (Save As) to the given path."""
+        """Save the current project (Save As) via the external save helper.
+
+        Ableton Live 12 exposes no save API, so we delegate to the
+        save_helper.py daemon (127.0.0.1:9878), which simulates
+        Ctrl+Shift+S and pastes the destination path.
+        """
         try:
-            app = self.application()
-            if hasattr(app, "save_live_set"):
-                app.save_live_set(path)
-                return {"saved_to": path, "mode": "application.save_live_set"}
-            if hasattr(self._song, "save_as"):
-                self._song.save_as(path)
-                return {"saved_to": path, "mode": "song.save_as"}
-            if hasattr(app, "save_live_set_as"):
-                app.save_live_set_as(path)
-                return {"saved_to": path, "mode": "application.save_live_set_as"}
-            raise AttributeError("No Save As method available (application.save_live_set / song.save_as / application.save_live_set_as)")
+            payload = json.dumps({"path": path}).encode("utf-8")
+            req = (
+                "POST /save_as HTTP/1.1\r\n"
+                "Host: 127.0.0.1\r\n"
+                "Content-Type: application/json\r\n"
+                "Content-Length: {0}\r\n"
+                "Connection: close\r\n"
+                "\r\n"
+                "{1}"
+            ).format(len(payload), payload.decode("utf-8"))
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(10.0)
+            try:
+                s.connect(("127.0.0.1", 9878))
+                s.sendall(req.encode("ascii"))
+                buf = b""
+                while True:
+                    try:
+                        chunk = s.recv(4096)
+                    except socket.timeout:
+                        break
+                    if not chunk:
+                        break
+                    buf += chunk
+                body = buf.split(b"\r\n\r\n", 1)[-1]
+                try:
+                    result = json.loads(body.decode("utf-8"))
+                except Exception:
+                    result = {"raw": body.decode("utf-8", "replace")}
+            finally:
+                s.close()
+            if result.get("status") == "ok":
+                return {"saved_to": path, "mode": "save_helper"}
+            raise RuntimeError("Save helper error: " + json.dumps(result))
         except Exception as e:
             self.log_message("Error saving project: " + str(e))
             raise

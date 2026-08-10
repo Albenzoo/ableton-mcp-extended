@@ -1,9 +1,10 @@
 """Unit tests for AbletonMCP Remote Script helpers."""
 
 import os
+import socket
 import sys
 import types
-from unittest.mock import MagicMock, PropertyMock
+from unittest.mock import MagicMock, PropertyMock, patch
 
 
 class _FrameworkControlSurface:
@@ -185,31 +186,21 @@ class TestCreateCuePointAssignsName:
         assert cue.name == "1.1.1"
 
 
-def test_save_project_calls_app_save_live_set():
+def test_save_project_posts_to_save_helper():
     cs = _StubControlSurface(None)
     cs._song = MagicMock()
     cs.log_message = lambda msg: None
-    mock_app = MagicMock()
-    cs.application = MagicMock(return_value=mock_app)
-    result = cs._save_project("C:/Music/Lofi Animal/Panda/001_Panda_Study.als")
-    assert result["saved_to"] == "C:/Music/Lofi Animal/Panda/001_Panda_Study.als"
-    assert result["mode"] == "application.save_live_set"
-    mock_app.save_live_set.assert_called_once_with(
-        "C:/Music/Lofi Animal/Panda/001_Panda_Study.als")
-
-
-def test_save_project_falls_back_to_song_save_as():
-    cs = _StubControlSurface(None)
-    cs._song = MagicMock()
-    cs.log_message = lambda msg: None
-    mock_app = MagicMock()
-    del mock_app.save_live_set
-    cs.application = MagicMock(return_value=mock_app)
-    result = cs._save_project("C:/Music/Lofi Animal/Panda/001_Panda_Study.als")
-    assert result["saved_to"] == "C:/Music/Lofi Animal/Panda/001_Panda_Study.als"
-    assert result["mode"] == "song.save_as"
-    cs._song.save_as.assert_called_once_with(
-        "C:/Music/Lofi Animal/Panda/001_Panda_Study.als")
+    mock_sock = MagicMock()
+    mock_sock.recv.side_effect = [b'{"status": "ok", "path": "C:/out.als"}', b""]
+    with patch("AbletonMCP_Remote_Script.socket.socket", return_value=mock_sock) as mock_socket_cls:
+        result = cs._save_project("C:/out.als")
+    assert result["saved_to"] == "C:/out.als"
+    assert result["mode"] == "save_helper"
+    mock_socket_cls.assert_called_once_with(socket.AF_INET, socket.SOCK_STREAM)
+    mock_sock.connect.assert_called_once_with(("127.0.0.1", 9878))
+    sent = mock_sock.sendall.call_args[0][0].decode("ascii")
+    assert "POST /save_as" in sent
+    assert '"path": "C:/out.als"' in sent
 
 
 def test_record_master_to_wav_creates_audio_track():

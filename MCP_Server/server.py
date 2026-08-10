@@ -1,5 +1,7 @@
 # ableton_mcp_server.py
 from mcp.server.fastmcp import FastMCP, Context
+import os
+import sys
 import socket
 import json
 import logging
@@ -543,6 +545,47 @@ def set_track_panning(ctx: Context, track_index: int, panning: float) -> str:
         return f"Error setting track panning: {str(e)}"
 
 
+_save_helper_process = None
+
+
+def _ensure_save_helper() -> str:
+    """Start the save helper daemon if it isn't already listening on 9878.
+
+    Returns an empty string on success, or an error message on failure.
+    """
+    global _save_helper_process
+    try:
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        probe.settimeout(0.5)
+        try:
+            probe.connect(("127.0.0.1", 9878))
+            probe.close()
+            return ""
+        except Exception:
+            pass
+        import subprocess
+        helper_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "save_helper.py")
+        _save_helper_process = subprocess.Popen(
+            [sys.executable, helper_path],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        # Wait up to 3s for the helper to come up.
+        for _ in range(30):
+            try:
+                probe2 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                probe2.settimeout(0.5)
+                probe2.connect(("127.0.0.1", 9878))
+                probe2.close()
+                return ""
+            except Exception:
+                time.sleep(0.1)
+        return "save helper did not start within 3s"
+    except Exception as e:
+        return f"failed to start save helper: {str(e)}"
+
+
 @mcp.tool()
 def save_ableton_project(ctx: Context, path: str) -> str:
     """
@@ -553,6 +596,9 @@ def save_ableton_project(ctx: Context, path: str) -> str:
     """
     if not path or not path.strip():
         return "Error saving project: path cannot be empty"
+    helper_err = _ensure_save_helper()
+    if helper_err:
+        return f"Error saving project: {helper_err}"
     try:
         ableton = get_ableton_connection()
         result = ableton.send_command("save_project", {"path": path})
