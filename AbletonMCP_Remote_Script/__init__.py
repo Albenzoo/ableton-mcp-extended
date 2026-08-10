@@ -241,7 +241,8 @@ class AbletonMCP(ControlSurface):
                                  "set_device_parameter", "set_device_enabled",
                                  "delete_device", "navigate_preset",
                                  "delete_track",
-                                 "set_track_volume", "set_track_panning"]:
+                                 "set_track_volume", "set_track_panning",
+                                 "save_project"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -286,6 +287,9 @@ class AbletonMCP(ControlSurface):
                             result = self._start_playback()
                         elif command_type == "stop_playback":
                             result = self._stop_playback()
+                        elif command_type == "save_project":
+                            path = params.get("path", "")
+                            result = self._save_project(path)
                         elif command_type == "load_instrument_or_effect":
                             track_index = params.get("track_index", 0)
                             uri = params.get("uri", "")
@@ -927,6 +931,15 @@ class AbletonMCP(ControlSurface):
             return result
         except Exception as e:
             self.log_message("Error stopping playback: " + str(e))
+            raise
+
+    def _save_project(self, path):
+        """Save the current project (Save As) to the given path."""
+        try:
+            self._song.save(path)
+            return {"saved_to": path}
+        except Exception as e:
+            self.log_message("Error saving project: " + str(e))
             raise
 
     # Browser helper methods

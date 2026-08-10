@@ -6,7 +6,7 @@ import types
 from unittest.mock import MagicMock
 
 
-class _StubControlSurface:
+class _FrameworkControlSurface:
     def __init__(self, c_instance):
         pass
 
@@ -16,13 +16,21 @@ class _StubControlSurface:
 
 _framework = types.ModuleType("_Framework")
 _cs_module = types.ModuleType("_Framework.ControlSurface")
-_cs_module.ControlSurface = _StubControlSurface
+_cs_module.ControlSurface = _FrameworkControlSurface
 sys.modules.setdefault("_Framework", _framework)
 sys.modules.setdefault("_Framework.ControlSurface", _cs_module)
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from AbletonMCP_Remote_Script import AbletonMCP  # noqa: E402
+
+
+class _StubControlSurface(AbletonMCP):
+    def __init__(self, c_instance):
+        pass
+
+    def log_message(self, msg):
+        pass
 
 
 class _NormalTrack:
@@ -157,3 +165,14 @@ class TestCreateCuePointAssignsName:
         script._create_cue_point(time=16.0, name="")
 
         assert cue.name == "1.1.1"
+
+
+def test_save_project_calls_song_save():
+    from unittest.mock import MagicMock
+
+    cs = _StubControlSurface(None)
+    cs._song = MagicMock()
+    cs.log_message = lambda msg: None
+    result = cs._save_project("C:/Music/Lofi Animal/Panda/001_Panda_Study.als")
+    assert result["saved_to"] == "C:/Music/Lofi Animal/Panda/001_Panda_Study.als"
+    cs._song.save.assert_called_once()
