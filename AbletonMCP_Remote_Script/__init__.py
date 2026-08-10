@@ -939,7 +939,8 @@ class AbletonMCP(ControlSurface):
     def _save_project(self, path):
         """Save the current project (Save As) to the given path."""
         try:
-            self._song.save(path)
+            app = self.application()
+            app.save_live_set_as(path)
             return {"saved_to": path}
         except Exception as e:
             self.log_message("Error saving project: " + str(e))

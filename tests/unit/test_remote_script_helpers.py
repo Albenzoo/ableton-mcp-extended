@@ -185,13 +185,16 @@ class TestCreateCuePointAssignsName:
         assert cue.name == "1.1.1"
 
 
-def test_save_project_calls_song_save():
+def test_save_project_calls_save_live_set_as():
     cs = _StubControlSurface(None)
     cs._song = MagicMock()
     cs.log_message = lambda msg: None
+    mock_app = MagicMock()
+    cs.application = MagicMock(return_value=mock_app)
     result = cs._save_project("C:/Music/Lofi Animal/Panda/001_Panda_Study.als")
     assert result["saved_to"] == "C:/Music/Lofi Animal/Panda/001_Panda_Study.als"
-    cs._song.save.assert_called_once()
+    mock_app.save_live_set_as.assert_called_once_with(
+        "C:/Music/Lofi Animal/Panda/001_Panda_Study.als")
 
 
 def test_record_master_to_wav_creates_audio_track():
