@@ -120,7 +120,7 @@ class AbletonConnection:
             "set_device_parameter", "set_device_enabled",
             "delete_device", "navigate_preset",
             "set_track_volume", "set_track_panning",
-            "save_project",
+            "save_project", "record_master_to_wav",
         ]
         
         try:
@@ -560,6 +560,25 @@ def save_ableton_project(ctx: Context, path: str) -> str:
     except Exception as e:
         logger.error(f"Error saving Ableton project: {str(e)}")
         return f"Error saving project: {str(e)}"
+
+
+@mcp.tool()
+def record_master_to_wav(ctx: Context, path: str) -> str:
+    """
+    Record the Ableton master bus in real time and write it to a WAV file.
+
+    Parameters:
+    - path: Full destination path for the .wav file.
+    """
+    if not path or not path.strip():
+        return "Error recording master: path cannot be empty"
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("record_master_to_wav", {"path": path})
+        return f"Recorded master: {result.get('duration_sec', '?')}s -> {result.get('wav_path', path)}"
+    except Exception as e:
+        logger.error(f"Error recording master: {str(e)}")
+        return f"Error recording master: {str(e)}"
 
 
 @mcp.tool()
