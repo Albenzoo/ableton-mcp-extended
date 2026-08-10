@@ -1024,13 +1024,21 @@ class AbletonMCP(ControlSurface):
                 self._song.arrangement_overdub = False
 
                 # Compute recording length from the longest arrangement clip,
-                # defaulting to 64 beats (16 bars).
+                # defaulting to 64 beats (16 bars). clip.length is in beats.
                 length_beats = 64.0
                 for t in self._song.tracks:
                     for clip in t.arrangement_clips:
-                        end = clip.end
+                        try:
+                            end = float(clip.end)
+                        except Exception:
+                            end = None
+                        if end is None or end <= 0:
+                            try:
+                                end = float(clip.length)
+                            except Exception:
+                                end = None
                         if end is not None:
-                            length_beats = max(length_beats, float(end))
+                            length_beats = max(length_beats, end)
                 result_holder["length_beats"] = length_beats
 
                 self._song.start_playing()
