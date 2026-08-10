@@ -416,9 +416,12 @@ class AbletonMCP(ControlSurface):
                     # If we're already on the main thread, execute directly
                     main_thread_task()
                 
-                # Wait for the response with a timeout
+                # Wait for the response with a timeout.
+                # record_master_to_wav records in real time (up to minutes),
+                # so it needs a much longer timeout than other commands.
+                wait_timeout = 120.0 if command_type == "record_master_to_wav" else 10.0
                 try:
-                    task_response = response_queue.get(timeout=10.0)
+                    task_response = response_queue.get(timeout=wait_timeout)
                     if task_response.get("status") == "error":
                         response["status"] = "error"
                         response["message"] = task_response.get("message", "Unknown error")

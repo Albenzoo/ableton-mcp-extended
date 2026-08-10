@@ -48,10 +48,10 @@ class AbletonConnection:
             finally:
                 self.sock = None
 
-    def receive_full_response(self, sock, buffer_size=8192):
+    def receive_full_response(self, sock, buffer_size=8192, timeout=15.0):
         """Receive the complete response, potentially in multiple chunks"""
         chunks = []
-        sock.settimeout(15.0)  # Increased timeout for operations that might take longer
+        sock.settimeout(timeout)
         
         try:
             while True:
@@ -138,11 +138,14 @@ class AbletonConnection:
                 time.sleep(0.1)  # 100ms delay
             
             # Set timeout based on command type
-            timeout = 15.0 if is_modifying_command else 10.0
+            if command_type == "record_master_to_wav":
+                timeout = 130.0  # real-time recording can take minutes
+            else:
+                timeout = 15.0 if is_modifying_command else 10.0
             self.sock.settimeout(timeout)
             
             # Receive the response
-            response_data = self.receive_full_response(self.sock)
+            response_data = self.receive_full_response(self.sock, timeout=timeout)
             logger.info(f"Received {len(response_data)} bytes of data")
             
             # Parse the response
