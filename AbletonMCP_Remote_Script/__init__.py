@@ -1014,7 +1014,8 @@ class AbletonMCP(ControlSurface):
 
             self._song.current_song_time = 0.0
             track.record_start = 0.0
-            self._song.arrangement_overdub = False
+            self._song.arrangement_overdub = True
+            self._song.record_mode = True
 
             self._recording = {
                 "track": track,
@@ -1064,6 +1065,14 @@ class AbletonMCP(ControlSurface):
 
             # Cleanup.
             track.arm = False
+            try:
+                self._song.record_mode = False
+            except Exception:
+                pass
+            try:
+                self._song.arrangement_overdub = False
+            except Exception:
+                pass
             try:
                 self._song.delete_track(len(self._song.tracks) - 1)
             except Exception:
