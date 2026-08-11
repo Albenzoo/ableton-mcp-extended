@@ -1108,6 +1108,38 @@ class AbletonMCP(ControlSurface):
 
             duration_sec = time.time() - rec.get("started", time.time())
 
+            # Copy the recorded audio to the destination BEFORE deleting the
+            # temp track (deleting the track removes the recorded file).
+            copied_to = None
+            source = recorded_file
+            try:
+                import os as _os
+                import shutil as _shutil
+            except Exception:
+                _os = None
+                _shutil = None
+            if not source and song_file_path and _os is not None:
+                try:
+                    rec_dir = _os.path.join(
+                        _os.path.dirname(song_file_path), "Samples", "Recorded")
+                    if _os.path.isdir(rec_dir):
+                        wavs = [
+                            _os.path.join(rec_dir, f)
+                            for f in _os.listdir(rec_dir)
+                            if f.lower().endswith(('.wav', '.aif', '.aiff'))
+                        ]
+                        if wavs:
+                            source = max(wavs, key=_os.path.getmtime)
+                except Exception:
+                    source = None
+            if source and path and _os is not None and _shutil is not None:
+                try:
+                    _os.makedirs(_os.path.dirname(path) or ".", exist_ok=True)
+                    _shutil.copy2(source, path)
+                    copied_to = path
+                except Exception:
+                    copied_to = None
+
             # Cleanup.
             track.arm = False
             try:
@@ -1134,6 +1166,7 @@ class AbletonMCP(ControlSurface):
                 "wav_path": path,
                 "recorded_file": recorded_file,
                 "song_file_path": song_file_path,
+                "copied_to": copied_to,
             }
         except Exception as e:
             self.log_message("Error stopping master recording: " + str(e))

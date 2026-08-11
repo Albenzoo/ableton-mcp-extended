@@ -221,11 +221,19 @@ def test_start_master_recording_sets_up_track():
 
 
 def test_stop_master_recording_writes_wav():
+    import tempfile
     cs = _StubControlSurface(None)
     cs._song = MagicMock()
     cs.log_message = lambda msg: None
     rec_clip = MagicMock()
-    rec_clip.file_path = "C:/Ableton/Samples/Recorded/out.wav"
+    # Simulate a real recorded file on disk.
+    tmpdir = tempfile.mkdtemp()
+    src_dir = os.path.join(tmpdir, "Samples", "Recorded")
+    os.makedirs(src_dir)
+    src = os.path.join(src_dir, "rec.wav")
+    with open(src, "wb") as f:
+        f.write(b"RIFFdata")
+    rec_clip.file_path = src
     slot = MagicMock()
     slot.has_clip = True
     slot.clip = rec_clip
@@ -233,13 +241,18 @@ def test_stop_master_recording_writes_wav():
     rec_track.clip_slots = [slot]
     rec_track.arrangement_clips = []
     cs._song.tracks = [rec_track]
+    dest = os.path.join(tmpdir, "out.wav")
     cs._recording = {
         "track": rec_track,
-        "path": "C:/Music/out.wav",
+        "path": dest,
         "was_playing": False,
         "started": 1000.0,
     }
     result = cs._stop_master_recording()
-    assert result["wav_path"] == "C:/Music/out.wav"
-    assert result["recorded_file"] == "C:/Ableton/Samples/Recorded/out.wav"
+    assert result["wav_path"] == dest
+    assert result["recorded_file"] == src
+    assert result["copied_to"] == dest
+    assert os.path.exists(dest)
+    with open(dest, "rb") as f:
+        assert f.read() == b"RIFFdata"
     cs._song.stop_playing.assert_called()
