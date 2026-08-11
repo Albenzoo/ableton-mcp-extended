@@ -682,7 +682,13 @@ def stop_master_recording(ctx: Context) -> str:
         if source and dest:
             import shutil
             os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
-            shutil.copy2(source, dest)
+            # Give Ableton a moment to release the just-recorded file.
+            for _ in range(20):
+                try:
+                    shutil.copy2(source, dest)
+                    break
+                except PermissionError:
+                    time.sleep(0.5)
             return (f"Recording stopped: {duration}s -> {dest} "
                     f"(copied from {os.path.basename(source)})")
         return f"Recording stopped: {duration}s -> {result.get('wav_path', 'unknown')}"
