@@ -225,8 +225,12 @@ def test_stop_master_recording_writes_wav():
     cs._song = MagicMock()
     cs.log_message = lambda msg: None
     rec_clip = MagicMock()
+    slot = MagicMock()
+    slot.has_clip = True
+    slot.clip = rec_clip
     rec_track = MagicMock()
-    rec_track.arrangement_clips = [rec_clip]
+    rec_track.clip_slots = [slot]
+    rec_track.arrangement_clips = []
     cs._song.tracks = [rec_track]
     cs._recording = {
         "track": rec_track,

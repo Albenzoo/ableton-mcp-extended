@@ -1017,6 +1017,16 @@ class AbletonMCP(ControlSurface):
             self._song.arrangement_overdub = True
             self._song.record_mode = True
 
+            # Prepare a clip in the first slot so the armed track records
+            # into it (session-view recording). Duration is a generous
+            # default; the caller stops whenever ready.
+            try:
+                slot = track.clip_slots[0]
+                if not slot.has_clip:
+                    slot.create_clip(1024.0)
+            except Exception:
+                pass
+
             self._recording = {
                 "track": track,
                 "path": path,
@@ -1045,17 +1055,17 @@ class AbletonMCP(ControlSurface):
 
             self._song.stop_playing()
 
-            # The recorded clip lives in the track's arrangement_clips (or,
-            # in some Live versions, the first clip slot).
+            # The recorded clip lives in the first clip slot (session-view
+            # recording), falling back to arrangement clips.
             rec_clip = None
-            for c in track.arrangement_clips:
-                if c is not None:
-                    rec_clip = c
+            for slot in track.clip_slots:
+                if slot.has_clip:
+                    rec_clip = slot.clip
                     break
             if rec_clip is None:
-                for slot in track.clip_slots:
-                    if slot.has_clip:
-                        rec_clip = slot.clip
+                for c in track.arrangement_clips:
+                    if c is not None:
+                        rec_clip = c
                         break
 
             if rec_clip is not None:
