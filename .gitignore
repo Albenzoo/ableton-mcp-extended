@@ -47,4 +47,6 @@ Thumbs.db
 *.adg
 *.adv
 *.asd
+*Ableton Project Info/
+Desktop.ini
 !AbletonMCP_Remote_Script/*
