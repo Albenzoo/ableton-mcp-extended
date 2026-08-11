@@ -228,6 +228,8 @@ class AbletonMCP(ControlSurface):
             elif command_type == "save_project":
                 path = params.get("path", "")
                 response["result"] = self._save_project(path)
+            elif command_type == "inspect_export_api":
+                response["result"] = self._inspect_export_api()
 
             # Commands that modify Live's state should be scheduled on the main thread
             elif command_type in ["create_midi_track", "set_track_name",
@@ -988,6 +990,22 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error saving project: " + str(e))
             raise
 
+    def _inspect_export_api(self):
+        """Debug: list export-related attributes on application and song."""
+        result = {}
+        try:
+            app = self.application()
+            result["application"] = [
+                a for a in dir(app) if not a.startswith('_')
+            ]
+        except Exception as e:
+            result["application"] = "error: " + str(e)
+        result["song"] = [
+            a for a in dir(self._song)
+            if not a.startswith('_') and ('export' in a.lower() or 'render' in a.lower() or 'save' in a.lower())
+        ]
+        return result
+
     def _start_master_recording(self, path):
         """Start recording the master bus onto a temp audio track.
 
@@ -1068,8 +1086,12 @@ class AbletonMCP(ControlSurface):
                         rec_clip = c
                         break
 
+            recorded_file = None
             if rec_clip is not None:
-                rec_clip.create_audio_clip(path)
+                try:
+                    recorded_file = rec_clip.file_path
+                except Exception:
+                    recorded_file = None
 
             duration_sec = time.time() - rec.get("started", time.time())
 
@@ -1094,7 +1116,11 @@ class AbletonMCP(ControlSurface):
                     pass
             self._recording = None
 
-            return {"duration_sec": duration_sec, "wav_path": path}
+            return {
+                "duration_sec": duration_sec,
+                "wav_path": path,
+                "recorded_file": recorded_file,
+            }
         except Exception as e:
             self.log_message("Error stopping master recording: " + str(e))
             raise

@@ -225,6 +225,7 @@ def test_stop_master_recording_writes_wav():
     cs._song = MagicMock()
     cs.log_message = lambda msg: None
     rec_clip = MagicMock()
+    rec_clip.file_path = "C:/Ableton/Samples/Recorded/out.wav"
     slot = MagicMock()
     slot.has_clip = True
     slot.clip = rec_clip
@@ -240,5 +241,5 @@ def test_stop_master_recording_writes_wav():
     }
     result = cs._stop_master_recording()
     assert result["wav_path"] == "C:/Music/out.wav"
-    rec_clip.create_audio_clip.assert_called_once_with("C:/Music/out.wav")
+    assert result["recorded_file"] == "C:/Ableton/Samples/Recorded/out.wav"
     cs._song.stop_playing.assert_called()
