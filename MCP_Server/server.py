@@ -655,10 +655,11 @@ def stop_master_recording(ctx: Context) -> str:
 
         # Ableton writes the recorded audio into the project's
         # Samples/Recorded folder when the project is saved. Find the
-        # most recent file there and copy it to the requested destination.
+        # most recent file there, re-save the project to release Ableton's
+        # file lock, then copy it to the requested destination.
         source = None
         try:
-            recorded_file = result.get('recorded_file')
+            recorded_file = result.get('recorded_file') or result.get('source')
             song_file = result.get('song_file_path')
             candidates = []
             if recorded_file and os.path.exists(recorded_file):
@@ -680,6 +681,16 @@ def stop_master_recording(ctx: Context) -> str:
             logger.warning(f"Could not locate recorded file: {e}")
 
         if source and dest:
+            # Re-save the project to release Ableton's lock on the recorded
+            # file. The project already has a file_path, so the save helper
+            # will save over it without a dialog.
+            if song_file:
+                try:
+                    _ensure_save_helper()
+                    ableton.send_command("save_project", {"path": song_file})
+                    time.sleep(1.0)
+                except Exception as e:
+                    logger.warning(f"Re-save to release lock failed: {e}")
             import shutil
             os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
             # Give Ableton a moment to release the just-recorded file.

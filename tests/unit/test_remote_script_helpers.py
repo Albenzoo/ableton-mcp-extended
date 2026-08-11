@@ -251,8 +251,7 @@ def test_stop_master_recording_writes_wav():
     result = cs._stop_master_recording()
     assert result["wav_path"] == dest
     assert result["recorded_file"] == src
-    assert result["copied_to"] == dest
-    assert os.path.exists(dest)
-    with open(dest, "rb") as f:
-        assert f.read() == b"RIFFdata"
+    # The remote script locates the source; the server does the copy.
+    assert result["copied_to"] is None
+    assert result["source"] == src
     cs._song.stop_playing.assert_called()

@@ -1154,21 +1154,11 @@ class AbletonMCP(ControlSurface):
                     pass
             self._recording = None
 
-            # Copy the recorded audio to the destination AFTER cleanup so the
-            # file lock is released. Retry to wait for the release.
+            # The recorded audio is left on disk in Samples/Recorded. The
+            # server re-saves the project (which releases Ableton's file lock)
+            # and then copies the file to the destination. Report the source
+            # so the server can locate it.
             copied_to = None
-            if source and path and _os is not None and _shutil is not None:
-                try:
-                    _os.makedirs(_os.path.dirname(path) or ".", exist_ok=True)
-                    for _ in range(20):
-                        try:
-                            _shutil.copy2(source, path)
-                            copied_to = path
-                            break
-                        except Exception:
-                            time.sleep(0.5)
-                except Exception:
-                    copied_to = None
 
             return {
                 "duration_sec": duration_sec,
@@ -1176,6 +1166,7 @@ class AbletonMCP(ControlSurface):
                 "recorded_file": recorded_file,
                 "song_file_path": song_file_path,
                 "copied_to": copied_to,
+                "source": source,
             }
         except Exception as e:
             self.log_message("Error stopping master recording: " + str(e))
