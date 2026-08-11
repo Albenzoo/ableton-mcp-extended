@@ -1108,9 +1108,7 @@ class AbletonMCP(ControlSurface):
 
             duration_sec = time.time() - rec.get("started", time.time())
 
-            # Copy the recorded audio to the destination BEFORE deleting the
-            # temp track (deleting the track removes the recorded file).
-            copied_to = None
+            # Locate the recorded audio source.
             source = recorded_file
             try:
                 import os as _os
@@ -1132,15 +1130,10 @@ class AbletonMCP(ControlSurface):
                             source = max(wavs, key=_os.path.getmtime)
                 except Exception:
                     source = None
-            if source and path and _os is not None and _shutil is not None:
-                try:
-                    _os.makedirs(_os.path.dirname(path) or ".", exist_ok=True)
-                    _shutil.copy2(source, path)
-                    copied_to = path
-                except Exception:
-                    copied_to = None
 
-            # Cleanup.
+            # Cleanup: remove the temp track. This also releases Ableton's
+            # file lock on the recorded audio, which stays on disk in the
+            # project's Samples/Recorded folder.
             track.arm = False
             try:
                 self._song.record_mode = False
@@ -1160,6 +1153,22 @@ class AbletonMCP(ControlSurface):
                 except Exception:
                     pass
             self._recording = None
+
+            # Copy the recorded audio to the destination AFTER cleanup so the
+            # file lock is released. Retry to wait for the release.
+            copied_to = None
+            if source and path and _os is not None and _shutil is not None:
+                try:
+                    _os.makedirs(_os.path.dirname(path) or ".", exist_ok=True)
+                    for _ in range(20):
+                        try:
+                            _shutil.copy2(source, path)
+                            copied_to = path
+                            break
+                        except Exception:
+                            time.sleep(0.5)
+                except Exception:
+                    copied_to = None
 
             return {
                 "duration_sec": duration_sec,
