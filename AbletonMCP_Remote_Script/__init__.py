@@ -228,8 +228,6 @@ class AbletonMCP(ControlSurface):
             elif command_type == "save_project":
                 path = params.get("path", "")
                 response["result"] = self._save_project(path)
-            elif command_type == "inspect_export_api":
-                response["result"] = self._inspect_export_api()
 
             # Commands that modify Live's state should be scheduled on the main thread
             elif command_type in ["create_midi_track", "set_track_name",
@@ -420,10 +418,10 @@ class AbletonMCP(ControlSurface):
                     # If we're already on the main thread, execute directly
                     main_thread_task()
                 
-                # Wait for the response with a timeout.
-                # record_master_to_wav records in real time (up to minutes),
-                # so it needs a much longer timeout than other commands.
-                wait_timeout = 120.0 if command_type == "record_master_to_wav" else 10.0
+                # Wait for the response with a timeout. Master recording
+                # commands run in real time (up to minutes), so they need a
+                # much longer timeout than other commands.
+                wait_timeout = 120.0 if command_type in ("start_master_recording", "stop_master_recording") else 10.0
                 try:
                     task_response = response_queue.get(timeout=wait_timeout)
                     if task_response.get("status") == "error":
@@ -952,7 +950,10 @@ class AbletonMCP(ControlSurface):
         Ctrl+Shift+S and pastes the destination path.
         """
         try:
-            payload = json.dumps({"path": path}).encode("utf-8")
+            # ensure_ascii=False keeps non-ASCII path characters as real
+            # UTF-8 bytes so the Content-Length (computed on the encoded
+            # payload) matches the utf-8 re-encoded request body.
+            payload = json.dumps({"path": path}, ensure_ascii=False).encode("utf-8")
             req = (
                 "POST /save_as HTTP/1.1\r\n"
                 "Host: 127.0.0.1\r\n"
@@ -966,7 +967,7 @@ class AbletonMCP(ControlSurface):
             s.settimeout(10.0)
             try:
                 s.connect(("127.0.0.1", 9878))
-                s.sendall(req.encode("ascii"))
+                s.sendall(req.encode("utf-8"))
                 buf = b""
                 while True:
                     try:
@@ -990,29 +991,6 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error saving project: " + str(e))
             raise
 
-    def _inspect_export_api(self):
-        """Debug: list export-related attributes on application and song."""
-        result = {}
-        try:
-            app = self.application()
-            result["application"] = [
-                a for a in dir(app) if not a.startswith('_')
-            ]
-        except Exception as e:
-            result["application"] = "error: " + str(e)
-        result["song"] = [
-            a for a in dir(self._song)
-            if not a.startswith('_') and (
-                'export' in a.lower() or 'render' in a.lower()
-                or 'save' in a.lower() or 'file' in a.lower() or 'path' in a.lower()
-            )
-        ]
-        try:
-            result["song_file_path"] = self._song.file_path
-        except Exception as e:
-            result["song_file_path"] = "error: " + str(e)
-        return result
-
     def _start_master_recording(self, path):
         """Start recording the master bus onto a temp audio track.
 
@@ -1020,12 +998,15 @@ class AbletonMCP(ControlSurface):
         Resampling input) and starts transport. Returns immediately; the
         caller waits the desired duration then calls _stop_master_recording.
         """
+        track = None
+        track_index = None
         try:
             was_playing = self._song.is_playing
             if was_playing:
                 self._song.stop_playing()
 
             track = self._song.create_audio_track()
+            track_index = len(self._song.tracks) - 1
             track.name = "MCP Render Temp"
             resample = None
             for rt in track.available_input_routing_types:
@@ -1054,6 +1035,7 @@ class AbletonMCP(ControlSurface):
 
             self._recording = {
                 "track": track,
+                "track_index": track_index,
                 "path": path,
                 "was_playing": was_playing,
                 "started": time.time(),
@@ -1061,23 +1043,31 @@ class AbletonMCP(ControlSurface):
             self._song.start_playing()
             return {"status": "recording", "path": path}
         except Exception as e:
+            # If the temp track was created but setup failed partway, remove
+            # it so no orphaned "MCP Render Temp" track is left behind.
+            if track_index is not None:
+                try:
+                    self._song.delete_track(track_index)
+                except Exception:
+                    pass
             self.log_message("Error starting master recording: " + str(e))
             raise
 
     def _stop_master_recording(self):
-        """Stop the master recording and write the recorded audio to WAV.
+        """Stop the master recording and return the recorded audio source.
 
-        Stops transport, writes the recorded clip to disk, removes the temp
-        audio track, and returns the recording duration.
+        Stops transport, locates the recorded audio on disk, removes the temp
+        audio track, and returns the recording duration plus the source file.
+        The server copies the file to its destination afterwards.
         """
+        rec = getattr(self, "_recording", None)
+        if not rec:
+            raise RuntimeError("No active recording to stop")
+
+        track = rec.get("track")
+        path = rec.get("path")
+        track_index = rec.get("track_index")
         try:
-            rec = getattr(self, "_recording", None)
-            if not rec:
-                raise RuntimeError("No active recording to stop")
-
-            track = rec.get("track")
-            path = rec.get("path")
-
             self._song.stop_playing()
 
             # The recorded clip lives in the first clip slot (session-view
@@ -1112,10 +1102,8 @@ class AbletonMCP(ControlSurface):
             source = recorded_file
             try:
                 import os as _os
-                import shutil as _shutil
             except Exception:
                 _os = None
-                _shutil = None
             if not source and song_file_path and _os is not None:
                 try:
                     rec_dir = _os.path.join(
@@ -1131,10 +1119,24 @@ class AbletonMCP(ControlSurface):
                 except Exception:
                     source = None
 
-            # Cleanup: remove the temp track. This also releases Ableton's
-            # file lock on the recorded audio, which stays on disk in the
-            # project's Samples/Recorded folder.
-            track.arm = False
+            # The recorded audio is left on disk in Samples/Recorded. Report
+            # the source so the server can copy it to the destination (the
+            # server may need to close Ableton to release the file lock).
+            return {
+                "duration_sec": duration_sec,
+                "wav_path": path,
+                "recorded_file": recorded_file,
+                "song_file_path": song_file_path,
+                "source": source,
+            }
+        finally:
+            # Cleanup: remove the temp track and reset recording state even
+            # if an earlier step raised.
+            try:
+                if track is not None:
+                    track.arm = False
+            except Exception:
+                pass
             try:
                 self._song.record_mode = False
             except Exception:
@@ -1143,34 +1145,22 @@ class AbletonMCP(ControlSurface):
                 self._song.arrangement_overdub = False
             except Exception:
                 pass
-            try:
-                self._song.delete_track(len(self._song.tracks) - 1)
-            except Exception:
-                pass
+            if track_index is None:
+                try:
+                    track_index = len(self._song.tracks) - 1
+                except Exception:
+                    track_index = None
+            if track_index is not None:
+                try:
+                    self._song.delete_track(track_index)
+                except Exception:
+                    pass
             if rec.get("was_playing"):
                 try:
                     self._song.start_playing()
                 except Exception:
                     pass
             self._recording = None
-
-            # The recorded audio is left on disk in Samples/Recorded. The
-            # server re-saves the project (which releases Ableton's file lock)
-            # and then copies the file to the destination. Report the source
-            # so the server can locate it.
-            copied_to = None
-
-            return {
-                "duration_sec": duration_sec,
-                "wav_path": path,
-                "recorded_file": recorded_file,
-                "song_file_path": song_file_path,
-                "copied_to": copied_to,
-                "source": source,
-            }
-        except Exception as e:
-            self.log_message("Error stopping master recording: " + str(e))
-            raise
 
     # Browser helper methods
 

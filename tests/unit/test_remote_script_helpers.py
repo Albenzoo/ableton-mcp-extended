@@ -6,6 +6,8 @@ import sys
 import types
 from unittest.mock import MagicMock, PropertyMock, patch
 
+import pytest
+
 
 class _FrameworkControlSurface:
     def __init__(self, c_instance):
@@ -198,9 +200,24 @@ def test_save_project_posts_to_save_helper():
     assert result["mode"] == "save_helper"
     mock_socket_cls.assert_called_once_with(socket.AF_INET, socket.SOCK_STREAM)
     mock_sock.connect.assert_called_once_with(("127.0.0.1", 9878))
-    sent = mock_sock.sendall.call_args[0][0].decode("ascii")
+    sent = mock_sock.sendall.call_args[0][0].decode("utf-8")
     assert "POST /save_as" in sent
     assert '"path": "C:/out.als"' in sent
+
+
+def test_save_project_sends_utf8_for_non_ascii_path():
+    cs = _StubControlSurface(None)
+    cs._song = MagicMock()
+    cs.log_message = lambda msg: None
+    mock_sock = MagicMock()
+    mock_sock.recv.side_effect = [b'{"status": "ok", "path": "C:/out.als"}', b""]
+    non_ascii = "C:/M\xfasica/Studio/out.als"
+    with patch("AbletonMCP_Remote_Script.socket.socket", return_value=mock_sock):
+        result = cs._save_project(non_ascii)
+    assert result["saved_to"] == non_ascii
+    sent = mock_sock.sendall.call_args[0][0]
+    # The request must be utf-8 encoded so non-ASCII path characters survive.
+    assert non_ascii in sent.decode("utf-8")
 
 
 def test_start_master_recording_sets_up_track():
@@ -218,6 +235,29 @@ def test_start_master_recording_sets_up_track():
     assert rec_track.arm is True
     assert rec_track.name == "MCP Render Temp"
     cs._song.start_playing.assert_called_once()
+
+
+def test_start_master_recording_deletes_orphan_track_when_resampling_missing():
+    cs = _StubControlSurface(None)
+    cs._song = MagicMock()
+    cs.log_message = lambda msg: None
+    existing = MagicMock()
+    rec_track = MagicMock()
+    rec_track.available_input_routing_types = []
+    cs._song.tracks = [existing]
+
+    def create_track():
+        cs._song.tracks = cs._song.tracks + [rec_track]
+        return rec_track
+
+    cs._song.create_audio_track.side_effect = create_track
+
+    with pytest.raises(RuntimeError):
+        cs._start_master_recording("C:/Music/out.wav")
+
+    # The orphaned "MCP Render Temp" track must be deleted.
+    cs._song.delete_track.assert_called_once_with(1)
+    assert getattr(cs, "_recording", None) is None
 
 
 def test_stop_master_recording_writes_wav():
@@ -244,6 +284,7 @@ def test_stop_master_recording_writes_wav():
     dest = os.path.join(tmpdir, "out.wav")
     cs._recording = {
         "track": rec_track,
+        "track_index": 0,
         "path": dest,
         "was_playing": False,
         "started": 1000.0,
@@ -252,6 +293,75 @@ def test_stop_master_recording_writes_wav():
     assert result["wav_path"] == dest
     assert result["recorded_file"] == src
     # The remote script locates the source; the server does the copy.
-    assert result["copied_to"] is None
     assert result["source"] == src
     cs._song.stop_playing.assert_called()
+    cs._song.delete_track.assert_called_once_with(0)
+    assert cs._song.record_mode is False
+    assert cs._song.arrangement_overdub is False
+    assert getattr(cs, "_recording", None) is None
+
+
+def test_stop_master_recording_cleans_state_when_delete_track_raises():
+    cs = _StubControlSurface(None)
+    cs._song = MagicMock()
+    cs.log_message = lambda msg: None
+    rec_clip = MagicMock()
+    rec_clip.file_path = "C:/Samples/Recorded/rec.wav"
+    slot = MagicMock()
+    slot.has_clip = True
+    slot.clip = rec_clip
+    rec_track = MagicMock()
+    rec_track.clip_slots = [slot]
+    rec_track.arrangement_clips = []
+    rec_track.arm = True
+    cs._song.tracks = [rec_track]
+    cs._song.record_mode = True
+    cs._song.arrangement_overdub = True
+    cs._recording = {
+        "track": rec_track,
+        "track_index": 0,
+        "path": "C:/out.wav",
+        "was_playing": False,
+        "started": 1000.0,
+    }
+    cs._song.delete_track.side_effect = RuntimeError("delete failed")
+
+    result = cs._stop_master_recording()
+
+    # Cleanup still ran even though delete_track raised.
+    assert result["source"] == "C:/Samples/Recorded/rec.wav"
+    assert rec_track.arm is False
+    assert cs._song.record_mode is False
+    assert cs._song.arrangement_overdub is False
+    assert getattr(cs, "_recording", None) is None
+
+
+def test_stop_master_recording_cleans_state_when_earlier_step_raises():
+    cs = _StubControlSurface(None)
+    cs._song = MagicMock()
+    cs.log_message = lambda msg: None
+    rec_track = MagicMock()
+    rec_track.clip_slots = []
+    rec_track.arrangement_clips = []
+    rec_track.arm = True
+    cs._song.tracks = [rec_track]
+    cs._song.record_mode = True
+    cs._song.arrangement_overdub = True
+    cs._recording = {
+        "track": rec_track,
+        "track_index": 0,
+        "path": "C:/out.wav",
+        "was_playing": False,
+        "started": 1000.0,
+    }
+    cs._song.stop_playing.side_effect = RuntimeError("stop failed")
+
+    with pytest.raises(RuntimeError):
+        cs._stop_master_recording()
+
+    # State is cleaned up in a finally block even when an earlier step raises.
+    assert rec_track.arm is False
+    assert cs._song.record_mode is False
+    assert cs._song.arrangement_overdub is False
+    assert getattr(cs, "_recording", None) is None
+    cs._song.delete_track.assert_called_once_with(0)

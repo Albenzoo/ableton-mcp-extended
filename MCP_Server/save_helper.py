@@ -143,22 +143,32 @@ def _send_keys(*key_descs):
 
 
 def _set_clipboard_text(text):
-    """Put text into the Windows clipboard (UTF-16)."""
+    """Put text into the Windows clipboard (UTF-16).
+
+    Returns None on success, or an error string on failure.
+    """
     CF_UNICODETEXT = 13
-    user32.OpenClipboard(0)
+    if not user32.OpenClipboard(0):
+        return "OpenClipboard failed"
     try:
-        user32.EmptyClipboard()
+        if not user32.EmptyClipboard():
+            return "EmptyClipboard failed"
         # Allocate global memory and copy the UTF-16 string.
         data = (text + "\x00").encode("utf-16-le")
         hmem = kernel32.GlobalAlloc(0x0042, len(data))  # GMEM_MOVEABLE|GMEM_ZEROINIT
+        if not hmem:
+            return "GlobalAlloc failed"
         ptr = kernel32.GlobalLock(hmem)
         try:
             ctypes.memmove(ptr, data, len(data))
         finally:
             kernel32.GlobalUnlock(hmem)
-        user32.SetClipboardData(CF_UNICODETEXT, hmem)
+        if not user32.SetClipboardData(CF_UNICODETEXT, hmem):
+            kernel32.GlobalFree(hmem)
+            return "SetClipboardData failed"
     finally:
         user32.CloseClipboard()
+    return None
 
 
 WM_SETTEXT = 0x000C
@@ -290,7 +300,9 @@ def save_as(path):
     time.sleep(0.5)
 
     # Paste the destination folder path and press Enter to navigate.
-    _set_clipboard_text(dirpath)
+    err = _set_clipboard_text(dirpath)
+    if err:
+        return {"error": "clipboard error: " + err}
     _send_keys((VK_CONTROL, False), (VK_V, False), (VK_V, True), (VK_CONTROL, True))
     time.sleep(0.3)
     _send_keys((VK_RETURN, False), (VK_RETURN, True))
@@ -316,9 +328,17 @@ def save_as(path):
     else:
         # Fallback: press Enter.
         _send_keys((VK_RETURN, False), (VK_RETURN, True))
-    time.sleep(0.5)
 
-    return {"status": "ok", "path": path, "hwnd": hwnd, "dialog": dlg}
+    # Verify the save actually produced the expected file. Ableton always
+    # creates a "<name> Project" subfolder next to the requested path.
+    expected_dir = os.path.join(dirpath, os.path.splitext(filename)[0] + " Project")
+    expected_file = os.path.join(expected_dir, filename)
+    deadline = time.time() + 8.0
+    while time.time() < deadline:
+        if os.path.exists(expected_file):
+            return {"status": "ok", "path": path, "hwnd": hwnd, "dialog": dlg}
+        time.sleep(0.3)
+    return {"error": "save did not produce expected file: " + expected_file}
 
 
 class Handler(BaseHTTPRequestHandler):

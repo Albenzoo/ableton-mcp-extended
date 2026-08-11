@@ -1,6 +1,7 @@
 """Unit tests for save/render MCP tools."""
 import sys
 import os
+import tempfile
 from unittest.mock import MagicMock, patch
 
 _mock_mcp_module = MagicMock()
@@ -14,6 +15,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from MCP_Server.server import (save_ableton_project, start_master_recording,
                                stop_master_recording, finalize_master_render)
+import MCP_Server.server as server_module
+
+
+def _reset_recording_state():
+    server_module._active_recording_dest = None
+    server_module._active_recording_source = None
 
 
 @patch('MCP_Server.server.get_ableton_connection')
@@ -52,6 +59,7 @@ def test_save_ableton_project_rejects_empty_path(mock_conn):
 
 @patch('MCP_Server.server.get_ableton_connection')
 def test_start_master_recording_sends_path(mock_conn):
+    _reset_recording_state()
     mock_ableton = MagicMock()
     mock_ableton.send_command.return_value = {"status": "recording", "path": "C:/Music/out.wav"}
     mock_conn.return_value = mock_ableton
@@ -61,6 +69,19 @@ def test_start_master_recording_sends_path(mock_conn):
     assert "recording" in result
     mock_ableton.send_command.assert_called_once_with(
         "start_master_recording", {"path": "C:/Music/out.wav"})
+
+
+@patch('MCP_Server.server.get_ableton_connection')
+def test_start_master_recording_sets_dest_before_send_command(mock_conn):
+    _reset_recording_state()
+    mock_ableton = MagicMock()
+    mock_ableton.send_command.side_effect = Exception("send failed")
+    mock_conn.return_value = mock_ableton
+
+    result = start_master_recording(MagicMock(), path="C:/Music/out.wav")
+
+    assert "Error starting recording" in result
+    assert server_module._active_recording_dest == "C:/Music/out.wav"
 
 
 @patch('MCP_Server.server.get_ableton_connection')
@@ -76,6 +97,7 @@ def test_start_master_recording_rejects_empty_path(mock_conn):
 
 @patch('MCP_Server.server.get_ableton_connection')
 def test_stop_master_recording_sends_command(mock_conn):
+    _reset_recording_state()
     mock_ableton = MagicMock()
     mock_ableton.send_command.return_value = {"duration_sec": 172.0, "wav_path": "C:/Music/out.wav"}
     mock_conn.return_value = mock_ableton
@@ -88,9 +110,9 @@ def test_stop_master_recording_sends_command(mock_conn):
 
 
 @patch('MCP_Server.server.get_ableton_connection')
-@patch('MCP_Server.server._active_recording_dest', "C:/Music/out.wav")
 def test_stop_master_recording_reports_source(mock_conn):
-    import tempfile
+    _reset_recording_state()
+    server_module._active_recording_dest = "C:/Music/out.wav"
     tmpdir = tempfile.mkdtemp()
     src = os.path.join(tmpdir, "rec.wav")
     with open(src, "wb") as f:
@@ -108,12 +130,84 @@ def test_stop_master_recording_reports_source(mock_conn):
 
     assert "finalize_master_render" in result
     assert "rec.wav" in result
+    # The source is persisted for finalize_master_render; the dest is consumed.
+    assert server_module._active_recording_source == src
+    assert server_module._active_recording_dest is None
+
+
+@patch('MCP_Server.server.get_ableton_connection')
+@patch('MCP_Server.server.subprocess.run')
+def test_stop_then_finalize_persists_source(mock_run, mock_conn):
+    _reset_recording_state()
+    server_module._active_recording_dest = "C:/Music/out.wav"
+    tmpdir = tempfile.mkdtemp()
+    src = os.path.join(tmpdir, "MCP Render Temp 0001 [x].wav")
+    with open(src, "wb") as f:
+        f.write(b"RIFFdata")
+
+    mock_ableton = MagicMock()
+    mock_ableton.send_command.return_value = {
+        "duration_sec": 5.0,
+        "wav_path": "C:/Music/out.wav",
+        "source": src,
+    }
+    mock_conn.return_value = mock_ableton
+
+    stop_master_recording(MagicMock())
+
+    dest = os.path.join(tmpdir, "out.wav")
+    result = finalize_master_render(MagicMock(), dest=dest)
+
+    assert "Render finalized" in result
+    assert os.path.exists(dest)
+    with open(dest, "rb") as f:
+        assert f.read() == b"RIFFdata"
+    # The file was never locked, so Ableton must not be killed or relaunched.
+    mock_run.assert_not_called()
+
+
+def test_finalize_requires_dest():
+    result = finalize_master_render(MagicMock(), dest="")
+
+    assert "dest path required" in result
+
+
+@patch('MCP_Server.server._ableton_connection', None)
+def test_finalize_errors_when_no_recorded_file_found():
+    _reset_recording_state()
+    tmpdir = tempfile.mkdtemp()
+    with patch('MCP_Server.server.os.path.expanduser', return_value=tmpdir):
+        result = finalize_master_render(MagicMock(), dest=os.path.join(tmpdir, "out.wav"))
+
+    assert "no recorded file found" in result
+    assert not os.path.exists(os.path.join(tmpdir, "out.wav"))
 
 
 @patch('MCP_Server.server.subprocess.run')
 @patch('MCP_Server.server._ableton_connection', None)
-def test_finalize_master_render_copies_and_relaunches(mock_run):
-    import tempfile
+def test_finalize_copies_before_killing_ableton(mock_run):
+    _reset_recording_state()
+    tmpdir = tempfile.mkdtemp()
+    src = os.path.join(tmpdir, "MCP Render Temp 0001 [x].wav")
+    with open(src, "wb") as f:
+        f.write(b"RIFFdata")
+    server_module._active_recording_source = src
+
+    dest = os.path.join(tmpdir, "out.wav")
+    result = finalize_master_render(MagicMock(), dest=dest)
+
+    assert "Render finalized" in result
+    assert os.path.exists(dest)
+    with open(dest, "rb") as f:
+        assert f.read() == b"RIFFdata"
+    # Copy succeeded on the first attempt -> no taskkill, no relaunch.
+    mock_run.assert_not_called()
+
+
+@patch('MCP_Server.server.subprocess.run')
+@patch('MCP_Server.server._ableton_connection', None)
+def test_finalize_master_render_falls_back_to_live_recordings_search(mock_run):
+    _reset_recording_state()
     tmpdir = tempfile.mkdtemp()
     # Create a fake recorded file under Live Recordings.
     rec_dir = os.path.join(tmpdir, "Live Recordings", "Some Project", "Samples", "Recorded")

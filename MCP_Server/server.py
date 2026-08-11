@@ -611,6 +611,9 @@ def save_ableton_project(ctx: Context, path: str) -> str:
 
 
 _active_recording_dest = None
+_active_recording_source = None
+
+ABLETON_EXE_PATH = r"C:\ProgramData\Ableton\Live 12 Suite\Program\Ableton Live 12 Suite.exe"
 
 
 @mcp.tool()
@@ -624,13 +627,17 @@ def start_master_recording(ctx: Context, path: str) -> str:
     Parameters:
     - path: Full destination path for the .wav file.
     """
-    global _active_recording_dest
+    global _active_recording_dest, _active_recording_source
     if not path or not path.strip():
         return "Error starting recording: path cannot be empty"
+    # Optimistically record the destination before sending the command, so
+    # state is consistent even if the send fails. Starting a fresh recording
+    # also clears any stale source from a previous session.
+    _active_recording_dest = path
+    _active_recording_source = None
     try:
         ableton = get_ableton_connection()
         result = ableton.send_command("start_master_recording", {"path": path})
-        _active_recording_dest = path
         return f"Recording started: {result.get('status', 'recording')} -> {result.get('path', path)}"
     except Exception as e:
         logger.error(f"Error starting recording: {str(e)}")
@@ -647,13 +654,17 @@ def stop_master_recording(ctx: Context) -> str:
 
     No parameters.
     """
-    global _active_recording_dest
+    global _active_recording_dest, _active_recording_source
     try:
         ableton = get_ableton_connection()
         result = ableton.send_command("stop_master_recording")
         duration = result.get('duration_sec', '?')
         dest = _active_recording_dest
+        # Consume the destination now; the source is persisted for
+        # finalize_master_render.
+        _active_recording_dest = None
         source = result.get('source') or result.get('recorded_file')
+        _active_recording_source = source
 
         if source and dest:
             return (f"Recording stopped: {duration}s. Recorded file ready at "
@@ -668,13 +679,13 @@ def stop_master_recording(ctx: Context) -> str:
 @mcp.tool()
 def finalize_master_render(ctx: Context, dest: str = None) -> str:
     """
-    Close Ableton, copy the recorded master audio to the destination, and
-    relaunch Ableton.
+    Copy the recorded master audio to the destination, closing Ableton first
+    only if the recorded file is still locked.
 
-    Call this after stop_master_recording. Ableton holds an exclusive lock on
-    the recorded file, so it must be closed before the copy. Pass the source
-    recorded file path via the source parameter, or the last recorded file
-    will be located automatically.
+    Call this after stop_master_recording. The recorded source is located by
+    stop_master_recording (with a fallback search of Ableton's Live
+    Recordings folder). If Ableton still holds an exclusive lock on the file,
+    it is closed to release the lock, then relaunched after the copy.
 
     Parameters:
     - dest: Full destination path for the .wav file.
@@ -682,79 +693,86 @@ def finalize_master_render(ctx: Context, dest: str = None) -> str:
     global _ableton_connection
     if not dest or not dest.strip():
         return "Error finalizing render: dest path required"
+
+    # The source was located by stop_master_recording; only fall back to the
+    # directory search when no persisted source exists (or it is gone).
     source = None
-    try:
-        # Find the most recent recorded file under the current project or
-        # Ableton's Live Recordings folder.
-        candidates = []
-        search_dirs = []
+    if _active_recording_source and os.path.exists(_active_recording_source):
+        source = _active_recording_source
+    if not source:
         try:
-            if _ableton_connection is not None:
-                info = _ableton_connection.send_command("get_session_info")
-        except Exception:
-            pass
-        # Search likely locations for recently recorded WAVs.
-        base_search = [
-            os.path.expanduser("~\\Documents\\Ableton\\Live Recordings"),
-        ]
-        for base in base_search:
+            candidates = []
+            base = os.path.expanduser("~\\Documents\\Ableton\\Live Recordings")
             if os.path.isdir(base):
                 for root, dirs, files in os.walk(base):
                     for f in files:
                         if f.lower().endswith((".wav", ".aif", ".aiff")) and "Render Temp" in f:
                             candidates.append(os.path.join(root, f))
-        if candidates:
-            source = max(candidates, key=os.path.getmtime)
-    except Exception as e:
-        logger.warning(f"Could not locate recorded file: {e}")
+            if candidates:
+                source = max(candidates, key=os.path.getmtime)
+        except Exception as e:
+            logger.warning(f"Could not locate recorded file: {e}")
 
     if not source:
         return "Error finalizing render: no recorded file found"
 
-    # Close Ableton to release the file lock.
-    try:
-        if _ableton_connection is not None:
-            try:
-                _ableton_connection.disconnect()
-            except Exception:
-                pass
-            _ableton_connection = None
-        for proc_name in ("Ableton Live 12 Suite.exe", "Ableton.exe"):
-            try:
-                subprocess.run(["taskkill", "/IM", proc_name, "/F"],
-                               capture_output=True, timeout=15)
-            except Exception:
-                pass
-        time.sleep(5)
-    except Exception as e:
-        logger.warning(f"Could not close Ableton: {e}")
-
-    # Now the file is unlocked; copy it.
     import shutil
     os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
-    copied = False
-    for _ in range(10):
+
+    def _try_copy():
+        """Best-effort copy; returns True on success."""
+        for _ in range(10):
+            try:
+                shutil.copy2(source, dest)
+                return True
+            except (PermissionError, FileNotFoundError):
+                time.sleep(1.0)
+        return False
+
+    # Try the copy first: the file may already be unlocked.
+    copied = _try_copy()
+    closed_ableton = False
+
+    if not copied:
+        # Ableton still holds the lock; close it to release the file.
+        logger.warning(
+            "Could not copy recorded file (still locked); closing Ableton "
+            "to release the file lock"
+        )
         try:
-            shutil.copy2(source, dest)
-            copied = True
-            break
-        except PermissionError:
-            time.sleep(1.0)
+            if _ableton_connection is not None:
+                try:
+                    _ableton_connection.disconnect()
+                except Exception:
+                    pass
+                _ableton_connection = None
+            for proc_name in ("Ableton Live 12 Suite.exe", "Ableton.exe"):
+                try:
+                    subprocess.run(["taskkill", "/IM", proc_name, "/F"],
+                                   capture_output=True, timeout=15)
+                except Exception:
+                    pass
+            time.sleep(5)
+            closed_ableton = True
+            copied = _try_copy()
+        except Exception as e:
+            logger.warning(f"Could not close Ableton: {e}")
+
     if not copied:
         return (f"Error finalizing render: could not copy {source} "
                 f"(file still locked)")
 
-    # Relaunch Ableton.
-    try:
-        subprocess.Popen(
-            [r"C:\ProgramData\Ableton\Live 12 Suite\Program\Ableton Live 12 Suite.exe"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-    except Exception as e:
-        logger.warning(f"Could not relaunch Ableton: {e}")
+    # Relaunch Ableton only if it was closed to release the lock.
+    if closed_ableton:
+        try:
+            subprocess.Popen(
+                [ABLETON_EXE_PATH],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        except Exception as e:
+            logger.warning(f"Could not relaunch Ableton from {ABLETON_EXE_PATH}: {e}")
 
-    return (f"Render finalized: {dest} (copied from {os.path.basename(source)}, "
-            f"Ableton closed and relaunched)")
+    return (f"Render finalized: {dest} (copied from {os.path.basename(source)})")
 
 
 @mcp.tool()

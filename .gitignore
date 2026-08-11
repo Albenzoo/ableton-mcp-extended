@@ -48,5 +48,8 @@ Thumbs.db
 *.adv
 *.asd
 *Ableton Project Info/
+# Ableton Live 12 creates "<Name> Project/" folders next to saved sets
+# (e.g. "tmp_test_proj Project/"); ignore them and their recorded audio.
+*Project/
 Desktop.ini
 !AbletonMCP_Remote_Script/*
