@@ -1002,8 +1002,15 @@ class AbletonMCP(ControlSurface):
             result["application"] = "error: " + str(e)
         result["song"] = [
             a for a in dir(self._song)
-            if not a.startswith('_') and ('export' in a.lower() or 'render' in a.lower() or 'save' in a.lower())
+            if not a.startswith('_') and (
+                'export' in a.lower() or 'render' in a.lower()
+                or 'save' in a.lower() or 'file' in a.lower() or 'path' in a.lower()
+            )
         ]
+        try:
+            result["song_file_path"] = self._song.file_path
+        except Exception as e:
+            result["song_file_path"] = "error: " + str(e)
         return result
 
     def _start_master_recording(self, path):
@@ -1093,6 +1100,12 @@ class AbletonMCP(ControlSurface):
                 except Exception:
                     recorded_file = None
 
+            song_file_path = None
+            try:
+                song_file_path = self._song.file_path
+            except Exception:
+                song_file_path = None
+
             duration_sec = time.time() - rec.get("started", time.time())
 
             # Cleanup.
@@ -1120,6 +1133,7 @@ class AbletonMCP(ControlSurface):
                 "duration_sec": duration_sec,
                 "wav_path": path,
                 "recorded_file": recorded_file,
+                "song_file_path": song_file_path,
             }
         except Exception as e:
             self.log_message("Error stopping master recording: " + str(e))

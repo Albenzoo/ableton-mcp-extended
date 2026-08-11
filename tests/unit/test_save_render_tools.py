@@ -84,3 +84,35 @@ def test_stop_master_recording_sends_command(mock_conn):
     assert "172.0" in result
     assert "out.wav" in result
     mock_ableton.send_command.assert_called_once_with("stop_master_recording")
+
+
+@patch('MCP_Server.server.get_ableton_connection')
+@patch('MCP_Server.server._active_recording_dest', "C:/Music/out.wav")
+def test_stop_master_recording_copies_recorded_file(mock_conn):
+    import tempfile
+    tmpdir = tempfile.mkdtemp()
+    # Create a fake "project" with a Samples/Recorded dir containing a wav.
+    proj_dir = os.path.join(tmpdir, "proj")
+    rec_dir = os.path.join(proj_dir, "Samples", "Recorded")
+    os.makedirs(rec_dir)
+    src = os.path.join(rec_dir, "rec.wav")
+    with open(src, "wb") as f:
+        f.write(b"RIFFtest")
+
+    mock_ableton = MagicMock()
+    mock_ableton.send_command.return_value = {
+        "duration_sec": 5.0,
+        "wav_path": "C:/Music/out.wav",
+        "recorded_file": None,
+        "song_file_path": os.path.join(proj_dir, "song.als"),
+    }
+    mock_conn.return_value = mock_ableton
+
+    dest = os.path.join(tmpdir, "out.wav")
+    with patch('MCP_Server.server._active_recording_dest', dest):
+        result = stop_master_recording(MagicMock())
+
+    assert "copied from rec.wav" in result
+    assert os.path.exists(dest)
+    with open(dest, "rb") as f:
+        assert f.read() == b"RIFFtest"

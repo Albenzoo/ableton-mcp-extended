@@ -609,6 +609,9 @@ def save_ableton_project(ctx: Context, path: str) -> str:
         return f"Error saving project: {str(e)}"
 
 
+_active_recording_dest = None
+
+
 @mcp.tool()
 def start_master_recording(ctx: Context, path: str) -> str:
     """
@@ -620,11 +623,13 @@ def start_master_recording(ctx: Context, path: str) -> str:
     Parameters:
     - path: Full destination path for the .wav file.
     """
+    global _active_recording_dest
     if not path or not path.strip():
         return "Error starting recording: path cannot be empty"
     try:
         ableton = get_ableton_connection()
         result = ableton.send_command("start_master_recording", {"path": path})
+        _active_recording_dest = path
         return f"Recording started: {result.get('status', 'recording')} -> {result.get('path', path)}"
     except Exception as e:
         logger.error(f"Error starting recording: {str(e)}")
@@ -641,10 +646,46 @@ def stop_master_recording(ctx: Context) -> str:
 
     No parameters.
     """
+    global _active_recording_dest
     try:
         ableton = get_ableton_connection()
         result = ableton.send_command("stop_master_recording")
-        return f"Recording stopped: {result.get('duration_sec', '?')}s -> {result.get('wav_path', 'unknown')}"
+        duration = result.get('duration_sec', '?')
+        dest = _active_recording_dest
+
+        # Ableton writes the recorded audio into the project's
+        # Samples/Recorded folder when the project is saved. Find the
+        # most recent file there and copy it to the requested destination.
+        source = None
+        try:
+            recorded_file = result.get('recorded_file')
+            song_file = result.get('song_file_path')
+            candidates = []
+            if recorded_file and os.path.exists(recorded_file):
+                candidates.append(recorded_file)
+            if song_file:
+                proj_dir = os.path.dirname(song_file)
+                rec_dir = os.path.join(proj_dir, "Samples", "Recorded")
+                if os.path.isdir(rec_dir):
+                    wavs = [
+                        os.path.join(rec_dir, f)
+                        for f in os.listdir(rec_dir)
+                        if f.lower().endswith(('.wav', '.aif', '.aiff'))
+                    ]
+                    if wavs:
+                        candidates.append(max(wavs, key=os.path.getmtime))
+            if candidates:
+                source = max(candidates, key=os.path.getmtime)
+        except Exception as e:
+            logger.warning(f"Could not locate recorded file: {e}")
+
+        if source and dest:
+            import shutil
+            os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+            shutil.copy2(source, dest)
+            return (f"Recording stopped: {duration}s -> {dest} "
+                    f"(copied from {os.path.basename(source)})")
+        return f"Recording stopped: {duration}s -> {result.get('wav_path', 'unknown')}"
     except Exception as e:
         logger.error(f"Error stopping recording: {str(e)}")
         return f"Error stopping recording: {str(e)}"
